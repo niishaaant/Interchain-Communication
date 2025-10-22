@@ -1,0 +1,188 @@
+#include "Blockchain.h"
+#include "ibc/IBCTypes.h"
+#include <mutex>
+#include <algorithm>
+
+// Anonymous namespace for internal mutex
+namespace
+{
+    std::mutex &getChainMutex()
+    {
+        static std::mutex mtx;
+        return mtx;
+    }
+}
+
+Blockchain::Blockchain(const std::string &chainId, EventBus &bus, Logger &log, MetricsSink &metrics)
+    : chainId_(chainId),
+      mempool_(),
+      router_(),
+      bus_(bus),
+      log_(log),
+      metrics_(metrics)
+{
+    // Optionally, initialize with a genesis block
+    Block genesis;
+    genesis.header.chainId = chainId_;
+    genesis.header.height = 0;
+    chain_.push_back(genesis);
+    log_.info("Blockchain " + chainId_ + " initialized with genesis block.");
+}
+
+const std::string &Blockchain::id() const
+{
+    return chainId_;
+}
+
+Status Blockchain::openChannel(PortId port, ChannelId chan)
+{
+    std::lock_guard<std::mutex> lock(getChainMutex());
+    Status s = router_.bind(port, chan);
+    if (s.ok())
+    {
+        log_.info("Channel opened: port=" + port.value + " chan=" + chan.value);
+    }
+    else
+    {
+        log_.warn("Failed to open channel: " + s.message);
+    }
+    return s;
+}
+
+Status Blockchain::closeChannel(PortId port, ChannelId chan)
+{
+    std::lock_guard<std::mutex> lock(getChainMutex());
+    Status s = router_.unbind(port, chan);
+    if (s.ok())
+    {
+        log_.info("Channel closed: port=" + port.value + " chan=" + chan.value);
+    }
+    else
+    {
+        log_.warn("Failed to close channel: " + s.message);
+    }
+    return s;
+}
+
+Result<IBCPacket> Blockchain::sendIBC(PortId port, ChannelId chan,
+                                      const std::string &dstChain, PortId dstPort,
+                                      ChannelId dstChan, const std::string &payload)
+{
+    std::lock_guard<std::mutex> lock(getChainMutex());
+    // For simplicity, assume router_ is only for binding, not for channel lookup
+    // In a real impl, you'd have a map of IBCChannel objects
+    // Here, just create a temp channel for the call
+    IBCChannel channel(chainId_, port, chan);
+    Status openStatus = channel.open();
+    if (!openStatus.ok() && openStatus.code != ErrorCode::InvalidState)
+    {
+        return {openStatus, std::nullopt};
+    }
+    auto pktRes = channel.makePacket(dstChain, dstPort, dstChan, payload);
+    if (!pktRes.status.ok())
+    {
+        log_.warn("Failed to make IBC packet: " + pktRes.status.message);
+        return pktRes;
+    }
+    // Publish event with serialized packet data
+    std::string packetData = serializeIBCPacket(pktRes.value.value());
+    Event e{EventKind::IBCPacketSend, chainId_, "", packetData};
+    bus_.publish(e);
+    metrics_.incCounter("ibc_packets_sent");
+    return pktRes;
+}
+
+Status Blockchain::onIBCPacket(const IBCPacket &pkt)
+{
+    std::lock_guard<std::mutex> lock(getChainMutex());
+    // Accept packet on the channel
+    IBCChannel channel(chainId_, pkt.dstPort, pkt.dstChannel);
+    Status openStatus = channel.open();
+    if (!openStatus.ok() && openStatus.code != ErrorCode::InvalidState)
+    {
+        return openStatus;
+    }
+    Status s = channel.acceptPacket(pkt);
+    if (s.ok())
+    {
+        Event e{EventKind::IBCPacketRecv, chainId_, "", "IBC packet received"};
+        bus_.publish(e);
+        metrics_.incCounter("ibc_packets_received");
+
+        // Generate and publish acknowledgement
+        IBCPacket ack;
+        ack.type = IBCPacketType::Ack;
+        ack.srcChain = pkt.dstChain;  // We are now the sender
+        ack.dstChain = pkt.srcChain;  // Original sender
+        ack.srcPort = pkt.dstPort;
+        ack.srcChannel = pkt.dstChannel;
+        ack.dstPort = pkt.srcPort;
+        ack.dstChannel = pkt.srcChannel;
+        ack.sequence = pkt.sequence;
+        ack.payload = "ack_" + std::to_string(pkt.sequence);
+
+        std::string ackData = serializeIBCPacket(ack);
+        Event ackEvent{EventKind::IBCAckSend, chainId_, "", ackData};
+        bus_.publish(ackEvent);
+        log_.debug("Generated ack for packet seq=" + std::to_string(pkt.sequence));
+    }
+    else
+    {
+        log_.warn("Failed to accept IBC packet: " + s.message);
+    }
+    return s;
+}
+
+Status Blockchain::onIBCAck(const IBCPacket &ack)
+{
+    std::lock_guard<std::mutex> lock(getChainMutex());
+    // For demo, just log and publish event
+    Event e{EventKind::IBCAckRecv, chainId_, "", "IBC ack received"};
+    bus_.publish(e);
+    metrics_.incCounter("ibc_acks_received");
+    log_.info("IBC ack received for seq=" + std::to_string(ack.sequence));
+    return {ErrorCode::Ok, "Ack processed"};
+}
+
+const Block &Blockchain::head() const
+{
+    std::lock_guard<std::mutex> lock(getChainMutex());
+    return chain_.back();
+}
+
+Status Blockchain::appendBlock(const Block &blk)
+{
+    std::lock_guard<std::mutex> lock(getChainMutex());
+    if (!chain_.empty() && blk.header.height != chain_.back().header.height + 1)
+    {
+        log_.warn("Block height mismatch: got " + std::to_string(blk.header.height) +
+                  ", expected " + std::to_string(chain_.back().header.height + 1));
+        return {ErrorCode::InvalidState, "Block height mismatch"};
+    }
+    chain_.push_back(blk);
+    Event e{EventKind::BlockFinalized, chainId_, "", "Block appended at height " + std::to_string(blk.header.height)};
+    bus_.publish(e);
+    metrics_.incCounter("blocks_appended");
+    log_.info("Block appended at height " + std::to_string(blk.header.height));
+    return {ErrorCode::Ok, "Block appended"};
+}
+
+void Blockchain::registerNodeId(const std::string &nodeId)
+{
+    std::lock_guard<std::mutex> lock(getChainMutex());
+    if (std::find(nodeIds_.begin(), nodeIds_.end(), nodeId) == nodeIds_.end())
+    {
+        nodeIds_.push_back(nodeId);
+        log_.info("Node registered: " + nodeId);
+    }
+}
+
+Mempool &Blockchain::mempool()
+{
+    return mempool_;
+}
+
+IBCRouter &Blockchain::router()
+{
+    return router_;
+}

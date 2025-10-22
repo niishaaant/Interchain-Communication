@@ -1,0 +1,76 @@
+# Build artifacts
+build/
+*.o
+*.a
+*.so
+*.dylib
+*.exe
+*.out
+*.app
+ibc-sim
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+CMakeScripts/
+cmake_install.cmake
+install_manifest.txt
+compile_commands.json
+CTestTestfile.cmake
+_deps/
+
+# Simulation output
+*.jsonl
+metrics.jsonl
+*.log
+*.csv
+info
+run
+
+# IDE / Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+*.code-workspace
+.claude
+
+# Temporary files
+/tmp/
+*.tmp
+*.temp
+
+# OS
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Debug
+*.dSYM/
+vgcore.*
+
+# Documentation builds
+docs/_build/
+docs/.doctrees/
+
+# Python (if used for scripts/analysis)
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+
+# Backup files
+*.bak
+*.backup
+*~
+
+# Local configuration
+.env
+config.local.*
+secrets.*

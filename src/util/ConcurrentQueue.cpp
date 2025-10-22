@@ -1,0 +1,1 @@
+// Intentionally left blank. Template implementation is in the header.
