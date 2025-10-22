@@ -2,6 +2,7 @@
 
 #include "Relayer.h"
 #include "core/Node.h"
+#include "util/DetailedLogger.h"
 #include <random>
 #include <mutex>
 #include <sstream>
@@ -16,8 +17,8 @@ namespace
     }
 }
 
-Relayer::Relayer(Transport &transport, EventBus &bus, const std::string &name, Logger &log, MetricsSink &metrics)
-    : transport_(transport), bus_(bus), name_(name), log_(log), metrics_(metrics)
+Relayer::Relayer(Transport &transport, EventBus &bus, const std::string &name, Logger &log, MetricsSink &metrics, DetailedLogger* detailedLogger)
+    : transport_(transport), bus_(bus), name_(name), log_(log), metrics_(metrics), detailedLogger_(detailedLogger)
 {
     // Seed RNG with hash of name for deterministic behavior per relayer
     std::hash<std::string> hasher;
@@ -180,13 +181,35 @@ void Relayer::runLoop()
             Status s = relayPacket(pkt);
             if (s.ok())
             {
+                packetsRelayed_++;
                 metrics_.incCounter("relayer_packets_relayed");
                 log_.debug("Successfully relayed packet seq=" + std::to_string(pkt.sequence));
+
+                // Detailed IBC event logging
+                if (detailedLogger_)
+                {
+                    detailedLogger_->logIBCEvent(
+                        IBCEventType::PacketRelayed,
+                        pkt.srcChain,
+                        pkt.dstChain,
+                        pkt.srcPort.value,
+                        pkt.srcChannel.value,
+                        pkt.dstPort.value,
+                        pkt.dstChannel.value,
+                        pkt.sequence,
+                        pkt.payload,
+                        name_
+                    );
+                }
+
+                logRelayerState("packet_relayed", "seq=" + std::to_string(pkt.sequence));
             }
             else
             {
+                failures_++;
                 metrics_.incCounter("relayer_packets_failed");
                 log_.warn("Failed to relay packet: " + s.message);
+                logRelayerState("packet_failed", s.message);
             }
             processed = true;
         }
@@ -201,13 +224,35 @@ void Relayer::runLoop()
             Status s = relayAck(ack);
             if (s.ok())
             {
+                acksRelayed_++;
                 metrics_.incCounter("relayer_acks_relayed");
                 log_.debug("Successfully relayed ack seq=" + std::to_string(ack.sequence));
+
+                // Detailed IBC event logging
+                if (detailedLogger_)
+                {
+                    detailedLogger_->logIBCEvent(
+                        IBCEventType::AckRelayed,
+                        ack.srcChain,
+                        ack.dstChain,
+                        ack.srcPort.value,
+                        ack.srcChannel.value,
+                        ack.dstPort.value,
+                        ack.dstChannel.value,
+                        ack.sequence,
+                        ack.payload,
+                        name_
+                    );
+                }
+
+                logRelayerState("ack_relayed", "seq=" + std::to_string(ack.sequence));
             }
             else
             {
+                failures_++;
                 metrics_.incCounter("relayer_acks_failed");
                 log_.warn("Failed to relay ack: " + s.message);
+                logRelayerState("ack_failed", s.message);
             }
             processed = true;
         }
@@ -258,5 +303,20 @@ void Relayer::onIBCAckSendEvent(const Event &e)
         log_.error("Failed to deserialize IBCAck: " +
                    std::string(ex.what()));
         metrics_.incCounter("relayer_deserialization_errors");
+    }
+}
+
+void Relayer::logRelayerState(const std::string& event_type, const std::string& additional_data)
+{
+    if (detailedLogger_)
+    {
+        detailedLogger_->logRelayerState(
+            name_,
+            event_type,
+            packetsRelayed_.load(),
+            acksRelayed_.load(),
+            failures_.load(),
+            additional_data
+        );
     }
 }

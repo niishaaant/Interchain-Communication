@@ -1,5 +1,6 @@
 #include "Blockchain.h"
 #include "ibc/IBCTypes.h"
+#include "util/DetailedLogger.h"
 #include <mutex>
 #include <algorithm>
 
@@ -13,13 +14,14 @@ namespace
     }
 }
 
-Blockchain::Blockchain(const std::string &chainId, EventBus &bus, Logger &log, MetricsSink &metrics)
+Blockchain::Blockchain(const std::string &chainId, EventBus &bus, Logger &log, MetricsSink &metrics, DetailedLogger* detailedLogger)
     : chainId_(chainId),
       mempool_(),
       router_(),
       bus_(bus),
       log_(log),
-      metrics_(metrics)
+      metrics_(metrics),
+      detailedLogger_(detailedLogger)
 {
     // Optionally, initialize with a genesis block
     Block genesis;
@@ -89,6 +91,24 @@ Result<IBCPacket> Blockchain::sendIBC(PortId port, ChannelId chan,
     Event e{EventKind::IBCPacketSend, chainId_, "", packetData};
     bus_.publish(e);
     metrics_.incCounter("ibc_packets_sent");
+
+    // Detailed IBC event logging
+    if (detailedLogger_)
+    {
+        const IBCPacket& pkt = pktRes.value.value();
+        detailedLogger_->logIBCEvent(
+            IBCEventType::PacketCreated,
+            pkt.srcChain,
+            pkt.dstChain,
+            pkt.srcPort.value,
+            pkt.srcChannel.value,
+            pkt.dstPort.value,
+            pkt.dstChannel.value,
+            pkt.sequence,
+            pkt.payload
+        );
+    }
+
     return pktRes;
 }
 
@@ -109,6 +129,22 @@ Status Blockchain::onIBCPacket(const IBCPacket &pkt)
         bus_.publish(e);
         metrics_.incCounter("ibc_packets_received");
 
+        // Detailed IBC event logging
+        if (detailedLogger_)
+        {
+            detailedLogger_->logIBCEvent(
+                IBCEventType::PacketReceived,
+                pkt.srcChain,
+                pkt.dstChain,
+                pkt.srcPort.value,
+                pkt.srcChannel.value,
+                pkt.dstPort.value,
+                pkt.dstChannel.value,
+                pkt.sequence,
+                pkt.payload
+            );
+        }
+
         // Generate and publish acknowledgement
         IBCPacket ack;
         ack.type = IBCPacketType::Ack;
@@ -125,6 +161,22 @@ Status Blockchain::onIBCPacket(const IBCPacket &pkt)
         Event ackEvent{EventKind::IBCAckSend, chainId_, "", ackData};
         bus_.publish(ackEvent);
         log_.debug("Generated ack for packet seq=" + std::to_string(pkt.sequence));
+
+        // Detailed IBC event logging for ack generation
+        if (detailedLogger_)
+        {
+            detailedLogger_->logIBCEvent(
+                IBCEventType::AckGenerated,
+                ack.srcChain,
+                ack.dstChain,
+                ack.srcPort.value,
+                ack.srcChannel.value,
+                ack.dstPort.value,
+                ack.dstChannel.value,
+                ack.sequence,
+                ack.payload
+            );
+        }
     }
     else
     {
@@ -141,6 +193,23 @@ Status Blockchain::onIBCAck(const IBCPacket &ack)
     bus_.publish(e);
     metrics_.incCounter("ibc_acks_received");
     log_.info("IBC ack received for seq=" + std::to_string(ack.sequence));
+
+    // Detailed IBC event logging
+    if (detailedLogger_)
+    {
+        detailedLogger_->logIBCEvent(
+            IBCEventType::AckReceived,
+            ack.srcChain,
+            ack.dstChain,
+            ack.srcPort.value,
+            ack.srcChannel.value,
+            ack.dstPort.value,
+            ack.dstChannel.value,
+            ack.sequence,
+            ack.payload
+        );
+    }
+
     return {ErrorCode::Ok, "Ack processed"};
 }
 

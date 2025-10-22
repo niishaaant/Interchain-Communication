@@ -11,10 +11,13 @@
 #include "util/Logger.h"
 #include "util/Metrics.h"
 
+// Forward declaration
+class DetailedLogger;
+
 class Blockchain
 {
 public:
-    explicit Blockchain(const std::string &chainId, EventBus &bus, Logger &log, MetricsSink &metrics);
+    explicit Blockchain(const std::string &chainId, EventBus &bus, Logger &log, MetricsSink &metrics, DetailedLogger* detailedLogger = nullptr);
     const std::string &id() const;
 
     // IBC primitives
@@ -45,5 +48,6 @@ private:
     EventBus &bus_;
     Logger &log_;
     MetricsSink &metrics_;
+    DetailedLogger* detailedLogger_;
     std::vector<std::string> nodeIds_;
 };

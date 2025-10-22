@@ -13,6 +13,9 @@
 #include "util/Logger.h"
 #include "util/Metrics.h"
 
+// Forward declaration
+class DetailedLogger;
+
 enum class NodeMessageKind
 {
     Block,
@@ -52,7 +55,8 @@ public:
          Transport &transport,
          const std::string &address,
          Logger &log,
-         MetricsSink &metrics);
+         MetricsSink &metrics,
+         DetailedLogger* detailedLogger = nullptr);
 
     Status start(); // spawns thread
     void stop();    // signals and joins
@@ -66,6 +70,7 @@ public:
 
 private:
     void runLoop(); // thread main
+    void snapshotState(); // captures current node state
 
     std::string nodeId_;
     Blockchain &chain_;
@@ -74,6 +79,7 @@ private:
     std::string address_;
     Logger &log_;
     MetricsSink &metrics_;
+    DetailedLogger* detailedLogger_;
     std::thread worker_; // remember to join, they were jthreads
     std::atomic<bool> running_{false};
     ConcurrentQueue<NodeMessage> inbox_;

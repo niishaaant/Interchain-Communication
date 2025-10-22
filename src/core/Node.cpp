@@ -1,4 +1,5 @@
 #include "Node.h"
+#include "util/DetailedLogger.h"
 #include <stdexcept>
 #include <sstream>
 
@@ -30,14 +31,16 @@ Node::Node(const std::string &nodeId,
            Transport &transport,
            const std::string &address,
            Logger &log,
-           MetricsSink &metrics)
+           MetricsSink &metrics,
+           DetailedLogger* detailedLogger)
     : nodeId_(nodeId),
       chain_(chainRef),
       consensus_(std::move(consensus)),
       transport_(transport),
       address_(address),
       log_(log),
-      metrics_(metrics)
+      metrics_(metrics),
+      detailedLogger_(detailedLogger)
 {
     // Register endpoint for this node's address
     auto status = transport_.registerEndpoint(address_, [this](const std::string &bytes)
@@ -84,11 +87,26 @@ void Node::submitTransaction(const Transaction &tx)
     // Add to local mempool and broadcast to peers
     chain_.mempool().add(tx);
 
+    // Log transaction submission
+    if (detailedLogger_)
+    {
+        detailedLogger_->logTransactionEvent(
+            TxEventType::Submitted,
+            tx.tx_id,
+            txTypeToString(tx.type),
+            tx.from,
+            tx.to,
+            tx.payload,
+            chain_.id(),
+            nodeId_
+        );
+    }
+
     NodeMessage msg;
     msg.fromAddress = address_;
     msg.kind = NodeMessageKind::Transaction;
-    // For simplicity, serialize tx as from|to|payload
-    msg.bytes = tx.from + "|" + tx.to + "|" + tx.payload;
+    // For simplicity, serialize tx as from|to|payload|type|tx_id
+    msg.bytes = tx.from + "|" + tx.to + "|" + tx.payload + "|" + std::to_string(static_cast<int>(tx.type)) + "|" + tx.tx_id;
 
     // Broadcast to all peers (simulate: in real, would have peer list)
     // Here, just send to self for demo
@@ -128,10 +146,13 @@ void Node::runLoop()
         {
         case NodeMessageKind::Transaction:
         {
-            // Deserialize tx
+            // Deserialize tx: from|to|payload|type|tx_id
             size_t p1 = msg.bytes.find('|');
             size_t p2 = msg.bytes.find('|', p1 + 1);
-            if (p1 == std::string::npos || p2 == std::string::npos)
+            size_t p3 = msg.bytes.find('|', p2 + 1);
+            size_t p4 = msg.bytes.find('|', p3 + 1);
+            if (p1 == std::string::npos || p2 == std::string::npos ||
+                p3 == std::string::npos || p4 == std::string::npos)
             {
                 log_.warn("Malformed tx message");
                 break;
@@ -139,10 +160,31 @@ void Node::runLoop()
             Transaction tx;
             tx.from = msg.bytes.substr(0, p1);
             tx.to = msg.bytes.substr(p1 + 1, p2 - p1 - 1);
-            tx.payload = msg.bytes.substr(p2 + 1);
+            tx.payload = msg.bytes.substr(p2 + 1, p3 - p2 - 1);
+            tx.type = static_cast<TxType>(std::stoi(msg.bytes.substr(p3 + 1, p4 - p3 - 1)));
+            tx.tx_id = msg.bytes.substr(p4 + 1);
+
             chain_.mempool().add(tx);
             metrics_.incCounter("tx_received");
             log_.debug("Node " + nodeId_ + " received tx from " + tx.from);
+
+            // Log transaction received
+            if (detailedLogger_)
+            {
+                detailedLogger_->logTransactionEvent(
+                    TxEventType::Received,
+                    tx.tx_id,
+                    txTypeToString(tx.type),
+                    tx.from,
+                    tx.to,
+                    tx.payload,
+                    chain_.id(),
+                    nodeId_
+                );
+            }
+
+            // Snapshot state after receiving transaction
+            snapshotState();
             break;
         }
         case NodeMessageKind::Block:
@@ -170,4 +212,27 @@ void Node::runLoop()
             // consensus_->tick(); // Uncomment if Consensus has tick()
         }
     }
+}
+
+void Node::snapshotState()
+{
+    if (!detailedLogger_) return;
+
+    // Capture current state
+    const Block& head = chain_.head();
+    size_t mempoolSize = chain_.mempool().size();
+
+    // Use simple hash as placeholder (in reality would compute actual hash)
+    std::string blockHash = "hash_" + std::to_string(head.header.height);
+
+    std::string consensusState = consensus_ ? consensus_->name() : "none";
+
+    detailedLogger_->logNodeState(
+        chain_.id(),
+        nodeId_,
+        head.header.height,
+        blockHash,
+        mempoolSize,
+        consensusState
+    );
 }

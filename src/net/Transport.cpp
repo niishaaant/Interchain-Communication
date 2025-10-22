@@ -1,5 +1,6 @@
 // filepath: /home/niishaaant/work/blockchain-comm-sim/src/net/Transport.cpp
 #include "Transport.h"
+#include "util/DetailedLogger.h"
 #include <thread>
 #include <mutex>
 #include <condition_variable>
@@ -22,8 +23,8 @@ namespace
 class TransportImpl
 {
 public:
-    TransportImpl(unsigned seed, NetworkParams params)
-        : params_(params), rng_(seed) {}
+    TransportImpl(unsigned seed, NetworkParams params, DetailedLogger* detailedLogger)
+        : params_(params), rng_(seed), detailedLogger_(detailedLogger) {}
 
     ~TransportImpl()
     {
@@ -70,6 +71,17 @@ public:
         // Simulate drop
         if (shouldDrop(rng_, params_.dropRate))
         {
+            // Log network drop
+            if (detailedLogger_)
+            {
+                detailedLogger_->logNetworkDrop(
+                    from,
+                    to,
+                    "unknown",  // message type - could be inferred from data
+                    data.size(),
+                    "random_drop"
+                );
+            }
             return {ErrorCode::NetworkDrop, "Packet dropped by network"};
         }
         // Simulate latency and deliver asynchronously
@@ -99,12 +111,13 @@ private:
     std::mt19937 rng_;
     std::mutex mtx_;
     std::vector<std::thread> threads_; // Added to manage async sends
+    DetailedLogger* detailedLogger_;
 };
 
 // Implementation forwarding to TransportImpl
 
-Transport::Transport(unsigned seed, NetworkParams params)
-    : impl_(std::make_unique<TransportImpl>(seed, params)) {}
+Transport::Transport(unsigned seed, NetworkParams params, DetailedLogger* detailedLogger)
+    : impl_(std::make_unique<TransportImpl>(seed, params, detailedLogger)) {}
 
 Transport::~Transport() = default;
 

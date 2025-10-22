@@ -3,6 +3,9 @@
 #pragma once
 #include <memory>
 #include <vector>
+#include <thread>
+#include <atomic>
+#include <random>
 #include "config/ChainConfig.h"
 #include "config/SimulationConfig.h"
 #include "core/Blockchain.h"
@@ -12,6 +15,7 @@
 #include "core/EventBus.h"
 #include "util/Logger.h"
 #include "util/Metrics.h"
+#include "util/DetailedLogger.h"
 
 class SimulationController
 {
@@ -32,11 +36,21 @@ private:
     EventBus bus_;
     Logger rootLog_;
     MetricsSink metrics_;
+    DetailedLogger detailedLogger_;
     NetworkParams netParams_;
     Transport transport_;
     std::vector<std::unique_ptr<Blockchain>> chains_;
     std::vector<std::unique_ptr<Node>> nodes_;
-    std::unique_ptr<Relayer> relayer_;
-    // Mapping helpers
+    std::vector<std::unique_ptr<Relayer>> relayers_;  // Multiple relayers
+
+    // Traffic generator infrastructure
+    std::thread trafficThread_;
+    std::atomic<bool> trafficRunning_{false};
+    std::mt19937 trafficRng_;
+
+    // Helper methods
     Blockchain *findChain(const std::string &id);
+    void trafficGeneratorLoop();  // Continuous traffic generation
+    void generateRandomTransaction();  // Generate one random tx
+    void generateRandomIBCPacket();   // Generate one random IBC packet
 };

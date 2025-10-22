@@ -15,6 +15,7 @@ struct NetworkParams
 };
 
 class TransportImpl;
+class DetailedLogger;
 
 class Transport
 {
@@ -25,7 +26,7 @@ public:
     {
         DeliverFn deliver;
     };
-    Transport(unsigned seed, NetworkParams params);
+    Transport(unsigned seed, NetworkParams params, DetailedLogger* detailedLogger = nullptr);
     ~Transport();
 
     // Register a mailbox identified by peer address; returns Status.
