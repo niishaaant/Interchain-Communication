@@ -26,6 +26,11 @@ SimulationController::SimulationController(const std::vector<ChainConfig>& chain
     detailedLogger_.enableCategory(LogCategory::RelayerState, simCfg_.enableRelayerStateLogs);
 }
 
+SimulationController::~SimulationController()
+{
+    stop();
+}
+
 Status SimulationController::init() {
     rootLog_.info("Initializing simulation...");
 

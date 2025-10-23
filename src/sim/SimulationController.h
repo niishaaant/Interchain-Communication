@@ -21,6 +21,7 @@ class SimulationController
 {
 public:
     SimulationController(const std::vector<ChainConfig> &chains, const SimulationConfig &simCfg);
+    ~SimulationController();
 
     Status init(); // builds chains, nodes, and network
     Status openIBC(const std::string &a, PortId ap, ChannelId ac,

@@ -57,6 +57,7 @@ public:
          Logger &log,
          MetricsSink &metrics,
          DetailedLogger* detailedLogger = nullptr);
+    ~Node();
 
     Status start(); // spawns thread
     void stop();    // signals and joins

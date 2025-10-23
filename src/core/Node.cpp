@@ -53,6 +53,12 @@ Node::Node(const std::string &nodeId,
     chain_.registerNodeId(nodeId_);
 }
 
+Node::~Node()
+{
+    stop();
+    transport_.unregisterEndpoint(address_);
+}
+
 Status Node::start()
 {
     if (running_.exchange(true))

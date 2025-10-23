@@ -97,6 +97,7 @@ void LogStream::write(const std::string& json_line)
 {
     std::lock_guard<std::mutex> lock(mutex_);
     file_ << json_line << '\n';
+    file_.flush();
 }
 
 void LogStream::flush()

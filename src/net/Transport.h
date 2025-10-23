@@ -37,6 +37,9 @@ public:
 
     void setParams(NetworkParams p);
 
+    // Unregister a mailbox
+    Status unregisterEndpoint(const std::string &address);
+
 private:
     std::unique_ptr<class TransportImpl> impl_;
 };
