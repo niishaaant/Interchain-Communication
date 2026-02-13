@@ -75,19 +75,15 @@ graph TD;
 ```bash
 # 1. Create a build directory
 mkdir build
-cd build
 
-# 2. Configure with CMake
-cmake ..
-
-# 3. Compile
-make -j$(nproc)
+# 2. Compile
+./compile
 ```
 
 ### Running the Simulation
 
 ```bash
-./ibc-sim
+./build/ibc-sim
 ```
 *Press `Ctrl+C` to stop the simulation gracefully.*
 
