@@ -92,8 +92,8 @@ private:
 
 // Implementation delegation
 IBCChannel::IBCChannel(std::string chainId, PortId port, ChannelId chan)
-    : chainId_(std::move(chainId)), port_(std::move(port)), chan_(std::move(chan)), state_(ChannelState::Init), nextSeq_(1),
-      impl_(std::make_unique<IBCChannelImpl>(chainId_, port_, chan_)) {}
+    : chainId_(std::move(chainId)),
+      impl_(std::make_unique<IBCChannelImpl>(chainId_, port, chan)) {}
 
 IBCChannel::~IBCChannel() = default;
 

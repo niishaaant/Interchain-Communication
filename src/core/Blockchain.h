@@ -41,6 +41,12 @@ public:
     IBCRouter &router();
 
 private:
+    // Helper to generate channel map keys
+    static std::string makeChannelKey(const PortId& port, const ChannelId& chan);
+
+    // Get or create channel (thread-safe)
+    IBCChannel* getOrCreateChannel(const PortId& port, const ChannelId& chan);
+
     std::string chainId_;
     std::vector<Block> chain_;
     Mempool mempool_;
@@ -50,4 +56,8 @@ private:
     MetricsSink &metrics_;
     DetailedLogger* detailedLogger_;
     std::vector<std::string> nodeIds_;
+
+    // Persistent IBC channels (key = port:channel)
+    std::unordered_map<std::string, std::unique_ptr<IBCChannel>> channels_;
+    mutable std::mutex channelsMtx_;
 };

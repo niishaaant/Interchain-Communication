@@ -8,7 +8,9 @@
 #include <chrono>
 #include <random>
 #include <memory>
-#include <iostream>
+#include <queue>
+#include <vector>
+#include <atomic>
 
 using namespace std::chrono_literals;
 
@@ -17,46 +19,64 @@ namespace
     // Helper for random drop
     bool shouldDrop(std::mt19937 &rng, double dropRate)
     {
-        std::uniform_real_distribution<double> dist(0.0, 1.0);
+        std::uniform_real_distribution<double> dist(1.0, 1.0);
         return dist(rng) < dropRate;
     }
 }
 
-// Shared state for TransportImpl to allow detached threads to safely access it
-struct TransportState
+// Task for delayed delivery
+struct DeliveryTask
 {
-    std::unordered_map<std::string, Transport::Endpoint> endpoints_;
-    std::mutex mtx_;
+    std::chrono::steady_clock::time_point deliverAt;
+    std::string to;
+    Transport::Bytes data;
+
+    bool operator>(const DeliveryTask &other) const
+    {
+        return deliverAt > other.deliverAt; // Min-heap (earliest first)
+    }
 };
 
 class TransportImpl
 {
 public:
     TransportImpl(unsigned seed, NetworkParams params, DetailedLogger *detailedLogger)
-        : params_(params), rng_(seed), detailedLogger_(detailedLogger), state_(std::make_shared<TransportState>()) {}
+        : params_(params), rng_(seed), detailedLogger_(detailedLogger), running_(true)
+    {
+        // Create thread pool (4 workers)
+        for (size_t i = 0; i < 4; ++i)
+        {
+            workers_.emplace_back([this]()
+                                  { workerLoop(); });
+        }
+    }
 
-    ~TransportImpl() = default;
+    ~TransportImpl()
+    {
+        shutdown();
+    }
 
     Status registerEndpoint(const std::string &address, Transport::DeliverFn deliver)
     {
-        std::lock_guard<std::mutex> lock(state_->mtx_);
-        if (state_->endpoints_.count(address))
+        std::lock_guard<std::mutex> lock(endpointsMtx_);
+        if (endpoints_.count(address))
         {
             return {ErrorCode::InvalidState, "Endpoint already registered"};
         }
-        state_->endpoints_[address] = {deliver};
+        endpoints_[address] = {deliver};
         return {ErrorCode::Ok, ""};
     }
 
     Status send(const std::string &from, const std::string &to, const Transport::Bytes &data)
     {
         {
-            std::lock_guard<std::mutex> lock(state_->mtx_);
-            if (!state_->endpoints_.count(to))
+            std::lock_guard<std::mutex> lock(endpointsMtx_);
+            if (!endpoints_.count(to))
             {
                 return {ErrorCode::NotFound, "Destination endpoint not found"};
             }
         }
+
         // Simulate drop
         if (shouldDrop(rng_, params_.dropRate))
         {
@@ -73,25 +93,18 @@ public:
             return {ErrorCode::NetworkDrop, "Packet dropped by network"};
         }
 
-        // Capture state by shared_ptr to extend its lifetime
-        auto state = state_;
-        auto params = params_; // capture params by value
+        // Schedule task for delayed delivery
+        DeliveryTask task;
+        task.deliverAt = std::chrono::steady_clock::now() + params_.latency;
+        task.to = to;
+        task.data = data;
 
-        // Simulate latency and deliver asynchronously using detached thread
-        std::thread([state, params, to, data]()
-                    {
-            std::this_thread::sleep_for(params.latency);
-            Transport::DeliverFn deliver;
-            {
-                std::lock_guard<std::mutex> lock(state->mtx_);
-                auto it = state->endpoints_.find(to);
-                if (it == state->endpoints_.end()) return;
-                deliver = it->second.deliver;
-            }
-            std::cout<<"==================> here 1"<<std::endl;
-            if (deliver) deliver(data);
-            std::cout << "==================> here 2"<<std::endl; })
-            .detach();
+        {
+            std::lock_guard<std::mutex> lock(tasksMtx_);
+            tasks_.push(task);
+            pendingCount_++;
+        }
+        tasksCV_.notify_one();
 
         return {ErrorCode::Ok, ""};
     }
@@ -100,25 +113,140 @@ public:
     {
         // This is not fully thread-safe if called concurrently with send,
         // but for the simulation, we assume it's called during setup.
-        // A more robust implementation would need a lock here.
         params_ = p;
     }
 
     Status unregisterEndpoint(const std::string &address)
     {
-        std::lock_guard<std::mutex> lock(state_->mtx_);
-        if (state_->endpoints_.erase(address) == 0)
+        std::lock_guard<std::mutex> lock(endpointsMtx_);
+        if (endpoints_.erase(address) == 0)
         {
             return {ErrorCode::NotFound, "Endpoint not registered"};
         }
         return {ErrorCode::Ok, ""};
     }
 
+    void waitForPendingDeliveries()
+    {
+        std::unique_lock<std::mutex> lock(tasksMtx_);
+        drainCV_.wait(lock, [this]()
+                      { return pendingCount_ == 0 && inflightCount_ == 0; });
+    }
+
+    void shutdown()
+    {
+        if (!running_.exchange(false))
+            return;
+
+        tasksCV_.notify_all();
+
+        for (auto &worker : workers_)
+        {
+            if (worker.joinable())
+            {
+                worker.join();
+            }
+        }
+    }
+
 private:
+    void workerLoop()
+    {
+        while (running_)
+        {
+            DeliveryTask task;
+            bool hasTask = false;
+
+            {
+                std::unique_lock<std::mutex> lock(tasksMtx_);
+
+                // Wait for a task or shutdown
+                tasksCV_.wait(lock, [this]()
+                              { return !running_ || !tasks_.empty(); });
+
+                if (!running_ && tasks_.empty())
+                    break;
+
+                if (!tasks_.empty())
+                {
+                    task = tasks_.top();
+
+                    // Check if task is ready
+                    auto now = std::chrono::steady_clock::now();
+                    if (task.deliverAt <= now)
+                    {
+                        tasks_.pop();
+                        hasTask = true;
+                    }
+                    else
+                    {
+                        // Task not ready, wait until it is
+                        auto wait_duration = task.deliverAt - now;
+                        tasksCV_.wait_for(lock, wait_duration);
+                        continue;
+                    }
+                }
+            }
+
+            if (hasTask)
+            {
+                // Update counters: task removed from queue, now in-flight
+                {
+                    std::lock_guard<std::mutex> lock(tasksMtx_);
+                    pendingCount_--;
+                    inflightCount_++;
+                }
+
+                // Execute delivery outside the lock
+                Transport::DeliverFn deliver;
+                {
+                    std::lock_guard<std::mutex> lock(endpointsMtx_);
+                    auto it = endpoints_.find(task.to);
+                    if (it != endpoints_.end())
+                    {
+                        deliver = it->second.deliver;
+                    }
+                }
+
+                if (deliver)
+                {
+                    deliver(task.data);
+                }
+
+                // Delivery complete, update counter and notify waiters
+                {
+                    std::lock_guard<std::mutex> lock(tasksMtx_);
+                    inflightCount_--;
+                    if (pendingCount_ == 0 && inflightCount_ == 0)
+                    {
+                        drainCV_.notify_all();
+                    }
+                }
+            }
+        }
+    }
+
     NetworkParams params_;
     std::mt19937 rng_;
     DetailedLogger *detailedLogger_;
-    std::shared_ptr<TransportState> state_;
+
+    // Endpoints
+    std::unordered_map<std::string, Transport::Endpoint> endpoints_;
+    std::mutex endpointsMtx_;
+
+    // Thread pool
+    std::vector<std::thread> workers_;
+    std::atomic<bool> running_;
+
+    // Task queue (priority queue for earliest delivery first)
+    std::priority_queue<DeliveryTask, std::vector<DeliveryTask>, std::greater<DeliveryTask>> tasks_;
+    std::mutex tasksMtx_;
+    std::condition_variable tasksCV_;
+
+    // Pending task tracking for drain
+    std::atomic<size_t> pendingCount_{0};
+    std::atomic<size_t> inflightCount_{0}; // Tasks currently being delivered
+    std::condition_variable drainCV_;
 };
 
 // Implementation forwarding to TransportImpl
@@ -146,4 +274,14 @@ void Transport::setParams(NetworkParams p)
 Status Transport::unregisterEndpoint(const std::string &address)
 {
     return impl_->unregisterEndpoint(address);
+}
+
+void Transport::waitForPendingDeliveries()
+{
+    impl_->waitForPendingDeliveries();
+}
+
+void Transport::shutdown()
+{
+    impl_->shutdown();
 }

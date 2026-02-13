@@ -79,7 +79,7 @@ Status Relayer::relayPacket(const IBCPacket &pkt)
     NodeMessage msg;
     msg.fromAddress = name_;
     msg.kind = NodeMessageKind::IBC;
-    msg.bytes = payload; // original IBC payload
+    msg.bytes = serializeIBCPacket(pkt); // Send full serialized IBCPacket, not just payload
                          // Use the same on-wire encoding as Node::serializeNodeMessage
     auto serializeNodeMessage = [](const NodeMessage &m)
     {
@@ -120,7 +120,7 @@ Status Relayer::relayAck(const IBCPacket &ackPacket)
     NodeMessage msg;
     msg.fromAddress = name_;
     msg.kind = NodeMessageKind::IBC;
-    msg.bytes = payload;
+    msg.bytes = serializeIBCPacket(ackPacket); // Send full serialized IBCPacket (ack), not just payload
     auto serializeNodeMessage = [](const NodeMessage &m)
     {
         std::ostringstream oss;

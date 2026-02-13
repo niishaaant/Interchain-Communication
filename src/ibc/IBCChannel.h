@@ -30,10 +30,6 @@ public:
     ChannelState state() const;
 
 private:
-    std::string chainId_;
-    PortId port_;
-    ChannelId chan_;
-    ChannelState state_{ChannelState::Init};
-    uint64_t nextSeq_{1};
-    std::unique_ptr<IBCChannelImpl> impl_; // Added for delegation
+    std::string chainId_;  // Kept for logging/debugging
+    std::unique_ptr<IBCChannelImpl> impl_;  // All state delegated to impl
 };

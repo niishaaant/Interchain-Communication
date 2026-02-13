@@ -36,19 +36,55 @@ const std::string &Blockchain::id() const
     return chainId_;
 }
 
+std::string Blockchain::makeChannelKey(const PortId& port, const ChannelId& chan)
+{
+    return port.value + ":" + chan.value;
+}
+
+IBCChannel* Blockchain::getOrCreateChannel(const PortId& port, const ChannelId& chan)
+{
+    std::lock_guard<std::mutex> lock(channelsMtx_);
+    std::string key = makeChannelKey(port, chan);
+
+    auto it = channels_.find(key);
+    if (it != channels_.end()) {
+        return it->second.get();
+    }
+
+    // Create new channel
+    auto channel = std::make_unique<IBCChannel>(chainId_, port, chan);
+    auto* channelPtr = channel.get();
+    channels_[key] = std::move(channel);
+
+    log_.info("Created new IBC channel: " + key);
+    return channelPtr;
+}
+
 Status Blockchain::openChannel(PortId port, ChannelId chan)
 {
     std::lock_guard<std::mutex> lock(getChainMutex());
+
+    // Bind in router
     Status s = router_.bind(port, chan);
-    if (s.ok())
+    if (!s.ok())
     {
-        log_.info("Channel opened: port=" + port.value + " chan=" + chan.value);
+        log_.warn("Failed to bind channel in router: " + s.message);
+        return s;
     }
-    else
+
+    // Get or create the persistent channel
+    IBCChannel* channel = getOrCreateChannel(port, chan);
+
+    // Open the channel
+    Status openStatus = channel->open();
+    if (!openStatus.ok() && openStatus.code != ErrorCode::InvalidState)
     {
-        log_.warn("Failed to open channel: " + s.message);
+        log_.warn("Failed to open channel: " + openStatus.message);
+        return openStatus;
     }
-    return s;
+
+    log_.info("Channel opened and bound: port=" + port.value + " chan=" + chan.value);
+    return {ErrorCode::Ok, ""};
 }
 
 Status Blockchain::closeChannel(PortId port, ChannelId chan)
@@ -71,16 +107,19 @@ Result<IBCPacket> Blockchain::sendIBC(PortId port, ChannelId chan,
                                       ChannelId dstChan, const std::string &payload)
 {
     std::lock_guard<std::mutex> lock(getChainMutex());
-    // For simplicity, assume router_ is only for binding, not for channel lookup
-    // In a real impl, you'd have a map of IBCChannel objects
-    // Here, just create a temp channel for the call
-    IBCChannel channel(chainId_, port, chan);
-    Status openStatus = channel.open();
+
+    // Get or create the persistent channel
+    IBCChannel* channel = getOrCreateChannel(port, chan);
+
+    // Ensure channel is open
+    Status openStatus = channel->open();
     if (!openStatus.ok() && openStatus.code != ErrorCode::InvalidState)
     {
         return {openStatus, std::nullopt};
     }
-    auto pktRes = channel.makePacket(dstChain, dstPort, dstChan, payload);
+
+    // Make packet using persistent channel
+    auto pktRes = channel->makePacket(dstChain, dstPort, dstChan, payload);
     if (!pktRes.status.ok())
     {
         log_.warn("Failed to make IBC packet: " + pktRes.status.message);
@@ -115,14 +154,19 @@ Result<IBCPacket> Blockchain::sendIBC(PortId port, ChannelId chan,
 Status Blockchain::onIBCPacket(const IBCPacket &pkt)
 {
     std::lock_guard<std::mutex> lock(getChainMutex());
-    // Accept packet on the channel
-    IBCChannel channel(chainId_, pkt.dstPort, pkt.dstChannel);
-    Status openStatus = channel.open();
+
+    // Get or create the persistent channel for receiving
+    IBCChannel* channel = getOrCreateChannel(pkt.dstPort, pkt.dstChannel);
+
+    // Ensure channel is open (auto-open for receiving)
+    Status openStatus = channel->open();
     if (!openStatus.ok() && openStatus.code != ErrorCode::InvalidState)
     {
         return openStatus;
     }
-    Status s = channel.acceptPacket(pkt);
+
+    // Accept packet on persistent channel
+    Status s = channel->acceptPacket(pkt);
     if (s.ok())
     {
         Event e{EventKind::IBCPacketRecv, chainId_, "", "IBC packet received"};

@@ -1,0 +1,61 @@
+{
+  "chains": [
+    {
+      "chain_id": "chain-A",
+      "consensus": "PoW",
+      "node_count": 4,
+      "block_time_ms": 1000,
+      "pow_difficulty": 3
+    },
+    {
+      "chain_id": "chain-B",
+      "consensus": "PoS",
+      "node_count": 4,
+      "block_time_ms": 800,
+      "validator_set_size": 4
+    },
+    {
+      "chain_id": "chain-C",
+      "consensus": "PBFT",
+      "node_count": 4,
+      "block_time_ms": 500,
+      "pbft_fault_tolerance": 1
+    },
+    {
+      "chain_id": "chain-C",
+      "consensus": "PBFT",
+      "node_count": 4,
+      "block_time_ms": 500,
+      "pbft_fault_tolerance": 1
+    }
+  ],
+  "relayers": {
+    "count": 4
+  },
+  "simulation": {
+    "duration_ms": 120000,
+    "traffic_gen_interval_ms": 100,
+    "ibc_traffic_ratio": 0.3,
+    "enable_continuous_traffic": true,
+    "tx_generation_mode": "mixed",
+    "tx_burst_probability": 0.1,
+    "tx_burst_min_size": 5,
+    "tx_burst_max_size": 20
+  },
+  "network": {
+    "default_latency_ms": 50,
+    "packet_drop_rate": 0.01,
+    "node_sync_lag_ms": 500
+  },
+  "logging": {
+    "enable_transaction_logs": true,
+    "enable_ibc_logs": true,
+    "enable_network_drops": true,
+    "enable_node_state_snapshots": true,
+    "enable_relayer_state_logs": true,
+    "node_snapshot_interval_ms": 1000,
+    "enable_console_logs": true,
+    "console_log_level": "INFO"
+  },
+  "seed": 42
+}

@@ -1,5 +1,6 @@
 #include "Node.h"
 #include "util/DetailedLogger.h"
+#include "ibc/IBCTypes.h"
 #include <stdexcept>
 #include <sstream>
 
@@ -32,7 +33,7 @@ Node::Node(const std::string &nodeId,
            const std::string &address,
            Logger &log,
            MetricsSink &metrics,
-           DetailedLogger* detailedLogger)
+           DetailedLogger *detailedLogger)
     : nodeId_(nodeId),
       chain_(chainRef),
       consensus_(std::move(consensus)),
@@ -104,8 +105,7 @@ void Node::submitTransaction(const Transaction &tx)
             tx.to,
             tx.payload,
             chain_.id(),
-            nodeId_
-        );
+            nodeId_);
     }
 
     NodeMessage msg;
@@ -185,8 +185,7 @@ void Node::runLoop()
                     tx.to,
                     tx.payload,
                     chain_.id(),
-                    nodeId_
-                );
+                    nodeId_);
             }
 
             // Snapshot state after receiving transaction
@@ -201,8 +200,58 @@ void Node::runLoop()
         }
         case NodeMessageKind::IBC:
         {
-            // Deserialize IBC packet (not implemented, placeholder)
-            log_.debug("Node " + nodeId_ + " received IBC packet (not implemented)");
+            // Deserialize IBC packet and route to blockchain
+            try
+            {
+                IBCPacket pkt = deserializeIBCPacket(msg.bytes);
+
+                if (pkt.type == IBCPacketType::Data)
+                {
+                    log_.debug("Node " + nodeId_ + " received IBC data packet from " +
+                               pkt.srcChain + " to " + pkt.dstChain +
+                               " (seq=" + std::to_string(pkt.sequence) + ")");
+
+                    Status s = chain_.onIBCPacket(pkt);
+                    if (s.ok())
+                    {
+                        metrics_.incCounter("ibc_packets_processed");
+                        log_.info("Successfully processed IBC packet seq=" + std::to_string(pkt.sequence));
+                        // Note: Blockchain.onIBCPacket() already logs detailed IBC events
+                    }
+                    else
+                    {
+                        metrics_.incCounter("ibc_packets_failed");
+                        log_.warn("Failed to process IBC packet: " + s.message);
+                    }
+                }
+                else if (pkt.type == IBCPacketType::Ack)
+                {
+                    log_.debug("Node " + nodeId_ + " received IBC ack from " +
+                               pkt.srcChain + " to " + pkt.dstChain +
+                               " (seq=" + std::to_string(pkt.sequence) + ")");
+
+                    Status s = chain_.onIBCAck(pkt);
+                    if (s.ok())
+                    {
+                        metrics_.incCounter("ibc_acks_processed");
+                        log_.info("Successfully processed IBC ack seq=" + std::to_string(pkt.sequence));
+                        // Note: Blockchain.onIBCAck() already logs detailed IBC events
+                    }
+                    else
+                    {
+                        metrics_.incCounter("ibc_acks_failed");
+                        log_.warn("Failed to process IBC ack: " + s.message);
+                    }
+                }
+
+                // Snapshot state after processing IBC message
+                snapshotState();
+            }
+            catch (const std::exception &e)
+            {
+                log_.error("Failed to deserialize IBC packet: " + std::string(e.what()));
+                metrics_.incCounter("ibc_deserialization_errors");
+            }
             break;
         }
         default:
@@ -222,10 +271,11 @@ void Node::runLoop()
 
 void Node::snapshotState()
 {
-    if (!detailedLogger_) return;
+    if (!detailedLogger_)
+        return;
 
     // Capture current state
-    const Block& head = chain_.head();
+    const Block &head = chain_.head();
     size_t mempoolSize = chain_.mempool().size();
 
     // Use simple hash as placeholder (in reality would compute actual hash)
@@ -239,6 +289,5 @@ void Node::snapshotState()
         head.header.height,
         blockHash,
         mempoolSize,
-        consensusState
-    );
+        consensusState);
 }

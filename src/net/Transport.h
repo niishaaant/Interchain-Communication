@@ -40,6 +40,12 @@ public:
     // Unregister a mailbox
     Status unregisterEndpoint(const std::string &address);
 
+    // Wait for all pending deliveries to complete before shutdown
+    void waitForPendingDeliveries();
+
+    // Shutdown the transport thread pool
+    void shutdown();
+
 private:
     std::unique_ptr<class TransportImpl> impl_;
 };

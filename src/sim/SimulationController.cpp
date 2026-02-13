@@ -139,6 +139,16 @@ void SimulationController::stop() {
     }
     rootLog_.info("All nodes stopped.");
 
+    // Wait for all pending transport deliveries to complete before destroying nodes
+    rootLog_.info("Waiting for pending transport deliveries...");
+    transport_.waitForPendingDeliveries();
+    rootLog_.info("All pending deliveries completed.");
+
+    // Shutdown transport thread pool before nodes are destroyed
+    rootLog_.info("Shutting down transport...");
+    transport_.shutdown();
+    rootLog_.info("Transport shutdown complete.");
+
     // Flush all detailed logs
     rootLog_.info("Flushing detailed logs...");
     detailedLogger_.flushAll();

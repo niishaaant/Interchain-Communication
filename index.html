@@ -1,0 +1,518 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>IBC Sim Live Viewer</title>
+    <style>
+        :root {
+            color-scheme: dark;
+            --bg: #0b0f14;
+            --fg: #e6eef6;
+            --muted: #96a3b3;
+            --panel: #111722;
+            --accent: #4da3ff;
+            --bad: #ff5d6c;
+            --ok: #59d98c;
+        }
+
+        html,
+        body {
+            margin: 0;
+            height: 100%;
+            background: var(--bg);
+            color: var(--fg);
+            font: 14px/1.4 system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, "Helvetica Neue", Arial;
+        }
+
+        header {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 10px 14px;
+            background: #0d1420;
+            border-bottom: 1px solid #1b2330;
+            position: sticky;
+            top: 0;
+            z-index: 10;
+        }
+
+        .grid {
+            display: grid;
+            grid-template-columns: 2fr 1fr;
+            gap: 12px;
+            padding: 12px;
+            height: calc(100% - 54px);
+        }
+
+        .card {
+            background: var(--panel);
+            border: 1px solid #1b2533;
+            border-radius: 14px;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+            min-height: 0;
+        }
+
+        .card h3 {
+            margin: 0;
+            padding: 10px 12px;
+            border-bottom: 1px solid #1b2533;
+            font-size: 15px;
+            letter-spacing: .2px;
+        }
+
+        #viz {
+            flex: 1;
+            min-height: 0;
+            position: relative;
+        }
+
+        #canvas {
+            width: 100%;
+            height: 100%;
+            display: block;
+        }
+
+        .cols {
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 12px;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 13px;
+        }
+
+        th,
+        td {
+            padding: 8px 10px;
+            border-bottom: 1px dashed #223047;
+        }
+
+        th {
+            color: #cfe2ff;
+            font-weight: 700;
+            text-align: left;
+            position: sticky;
+            top: 0;
+            background: linear-gradient(#121a28, #101725);
+        }
+
+        .muted {
+            color: var(--muted);
+        }
+
+        .pill {
+            padding: 2px 8px;
+            border-radius: 999px;
+            font-size: 12px;
+            font-weight: 700;
+            display: inline-block;
+        }
+
+        .ok {
+            background: rgba(89, 217, 140, .15);
+            color: var(--ok);
+        }
+
+        .bad {
+            background: rgba(255, 93, 108, .15);
+            color: var(--bad);
+        }
+
+        .legend {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            padding: 8px 12px;
+        }
+
+        .chip {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            border: 1px solid #203049;
+            background: #0e1624;
+            padding: 6px 8px;
+            border-radius: 999px;
+        }
+
+        .dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            display: inline-block;
+        }
+
+        .foot {
+            padding: 8px 12px;
+            color: #90a0b5;
+            border-top: 1px solid #1b2533;
+            font-size: 12px;
+        }
+    </style>
+</head>
+
+<body>
+    <header>
+        <div><b>IBC Sim Live Viewer</b> <span class="muted"></span></div>
+        <div style="margin-left:auto" class="muted">Updates ~5×/sec</div>
+    </header>
+
+    <div class="grid">
+        <div class="card" id="network">
+            <h3>Network • Chains & IBC Traffic</h3>
+            <div id="viz"><canvas id="canvas"></canvas></div>
+            <div class="legend" id="legend"></div>
+            <div class="foot" id="stats">—</div>
+        </div>
+
+        <div class="cols">
+            <div class="card">
+                <h3>Chains</h3>
+                <div style="overflow:auto">
+                    <table id="chainsTbl">
+                        <thead>
+                            <tr>
+                                <th>Chain</th>
+                                <th>Consensus</th>
+                                <th>Height</th>
+                                <th>Mempool</th>
+                            </tr>
+                        </thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div class="card">
+                <h3>Channels</h3>
+                <div style="overflow:auto">
+                    <table id="chTbl">
+                        <thead>
+                            <tr>
+                                <th>Src → Dst</th>
+                                <th>Last Seq</th>
+                                <th>Packets</th>
+                                <th>Acks</th>
+                            </tr>
+                        </thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div class="card">
+                <h3>Relayers</h3>
+                <div style="overflow:auto">
+                    <table id="relTbl">
+                        <thead>
+                            <tr>
+                                <th>Relayer</th>
+                                <th>Packets</th>
+                                <th>Acks</th>
+                                <th>Failures</th>
+                                <th>Status</th>
+                            </tr>
+                        </thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        (async function () {
+            // ---------- UI refs ----------
+            const chainsTbl = document.querySelector('#chainsTbl tbody');
+            const chTbl = document.querySelector('#chTbl tbody');
+            const relTbl = document.querySelector('#relTbl tbody');
+            const legend = document.getElementById('legend');
+            const stats = document.getElementById('stats');
+
+            // Canvas
+            const canvas = document.getElementById('canvas');
+            const ctx = canvas.getContext('2d');
+            function resizeCanvas() {
+                const r = document.getElementById('viz').getBoundingClientRect();
+                canvas.width = Math.max(300, r.width);
+                canvas.height = Math.max(260, r.height);
+            }
+            new ResizeObserver(resizeCanvas).observe(document.getElementById('viz'));
+
+            // ---------- State ----------
+            const lastSize = {}; // filename -> chars processed
+            const tailFiles = ["transactions.jsonl", "ibc_events.jsonl", "network_drops.jsonl", "metrics.jsonl"];
+            let nodeFiles = [];     // discovered from config.txt
+            let relayerFiles = [];  // discovered from config.txt
+
+            const chains = new Map(); // chainId -> { consensus, height, mempool, color }
+            const channels = new Map(); // "src|dst" -> { lastSeq, packets, acks }
+            const relayers = new Map(); // relayerId -> { packets, acks, failures, lastTs }
+            const ibcBursts = [];       // recent edges [{src,dst,ts,color}]
+            const positions = new Map();// chainId -> {x,y}
+
+            // ---------- Utils ----------
+            const sleep = ms => new Promise(r => setTimeout(r, ms));
+            const hashColor = str => { let h = 0; h = (h + str.charCodeAt(6) * 50) >>> 0; console.log(h); return `hsl(${h % 360} 70% 55%)`; };
+            const safeParse = line => { try { return JSON.parse(line); } catch { return null; } };
+            const toTs = s => new Date(s).getTime();
+
+            async function fetchText(name) {
+                const res = await fetch(name + "?t=" + Date.now(), { cache: "no-store" });
+                if (!res.ok) throw new Error("fetch failed: " + name);
+                return await res.text();
+            }
+
+            async function tailFile(name) {
+                try {
+                    const txt = await fetchText(name);
+                    const prev = lastSize[name] ?? txt.length; // start tailing from current EOF
+                    lastSize[name] = txt.length;
+                    if (txt.length <= prev) return [];
+                    const delta = txt.slice(prev);
+                    return delta.split(/\r?\n/).filter(Boolean);
+                } catch { return []; }
+            }
+
+            // Discover node/relayer files from config.txt
+            async function initFromConfig() {
+                try {
+                    const cfgTxt = await fetchText("config.txt");
+                    const cfg = JSON.parse(cfgTxt);
+                    const chainsCfg = (cfg.chains || []).map(c => ({ id: c.chain_id, consensus: c.consensus, nodes: c.node_count | 0 }));
+                    const relCount = (cfg.relayers && cfg.relayers.count | 0) || 0;
+
+                    // Pre-create chain entries (colors) and file lists
+                    for (const c of chainsCfg) {
+                        console.log(c.id);
+                        chains.set(c.id, { consensus: c.consensus || 'unknown', height: 0, mempool: 0, color: hashColor(c.id) });
+                        for (let i = 0; i < c.nodes; i++) {
+                            nodeFiles.push(`node_state_${c.id}_node-${i}.jsonl`);
+                        }
+                    }
+                    for (let i = 0; i < relCount; i++) {
+                        relayerFiles.push(`relayer_state_relayer-${i}.jsonl`);
+                    }
+                } catch (e) {
+                    console.warn("Could not parse config.txt; falling back to defaults.", e);
+                    // Fallback: try a few typical names
+                    nodeFiles = [
+                        "node_state_chain-A_node-0.jsonl", "node_state_chain-A_node-1.jsonl",
+                        "node_state_chain-B_node-0.jsonl", "node_state_chain-B_node-1.jsonl"
+                    ];
+                    relayerFiles = ["relayer_state_relayer-0.jsonl", "relayer_state_relayer-1.jsonl"];
+                }
+            }
+
+            function upsertChainFromNodeState(j) {
+                const id = j.chain_id;
+                if (!id) return;
+                const c = chains.get(id) || { consensus: j.consensus_state || 'unknown', height: 0, mempool: 0, color: hashColor(id) };
+                c.consensus = j.consensus_state || c.consensus;
+                c.height = Math.max(c.height, j.block_height ?? 0);
+                c.mempool = Math.max(c.mempool, j.mempool_size ?? 0);
+                chains.set(id, c);
+            }
+
+            function recordIBC(j) {
+                const key = `${j.src_chain}|${j.dst_chain}`;
+                const ent = channels.get(key) || { lastSeq: 0, packets: 0, acks: 0 };
+                if (typeof j.sequence === 'number') ent.lastSeq = Math.max(ent.lastSeq, j.sequence);
+                if (j.event === 'packet_relayed' || j.event === 'packet_received' || j.event === 'packet_created') {
+                    ent.packets++;
+                    if (j.event !== 'packet_created') {
+                        const src = j.src_chain, dst = j.dst_chain;
+                        const color = (chains.get(src)?.color) || hashColor(src);
+                        ibcBursts.push({ src, dst, ts: performance.now(), color });
+                        if (ibcBursts.length > 200) ibcBursts.splice(0, ibcBursts.length - 200);
+                    }
+                }
+                if (j.event === 'ack_relayed' || j.event === 'ack_received') ent.acks++;
+                channels.set(key, ent);
+            }
+
+            function recordRelayer(j) {
+                const id = j.relayer_id; if (!id) return;
+                const r = relayers.get(id) || { packets: 0, acks: 0, failures: 0, lastTs: 0 };
+                r.packets = Math.max(r.packets, j.packets_relayed ?? r.packets);
+                r.acks = Math.max(r.acks, j.acks_relayed ?? r.acks);
+                r.failures = Math.max(r.failures, j.failures ?? r.failures);
+                r.lastTs = Math.max(r.lastTs, j.ts ? toTs(j.ts) : 0);
+                relayers.set(id, r);
+            }
+
+            function recordTx(j) {
+                if (j.chain_id && !chains.has(j.chain_id)) chains.set(j.chain_id, { consensus: 'unknown', height: 0, mempool: 0, color: hashColor(j.chain_id) });
+            }
+
+            // Layout chains in a circle
+            function layoutPositions() {
+                const ids = [...chains.keys()].sort();
+                const R = Math.min(canvas.width, canvas.height) * 0.38;
+                const cx = canvas.width / 2, cy = canvas.height / 2;
+                const n = Math.max(1, ids.length);
+                ids.forEach((id, i) => {
+                    const ang = (i / n) * Math.PI * 2 - Math.PI / 2;
+                    positions.set(id, { x: cx + R * Math.cos(ang), y: cy + R * Math.sin(ang) });
+                });
+            }
+
+            function draw() {
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+                layoutPositions();
+
+                // base channel lines
+                ctx.save(); ctx.lineWidth = 2;
+                for (const [key, ent] of channels.entries()) {
+                    const [src, dst] = key.split('|'); const ps = positions.get(src), pd = positions.get(dst);
+                    if (!ps || !pd) continue;
+                    ctx.strokeStyle = (chains.get(src)?.color) || '#888';
+                    ctx.globalAlpha = 0.25;
+                    ctx.beginPath(); ctx.moveTo(ps.x, ps.y); ctx.lineTo(pd.x, pd.y); ctx.stroke();
+                }
+                ctx.restore();
+
+                // bursts
+                const now = performance.now();
+                for (let i = ibcBursts.length - 1; i >= 0; --i) {
+                    const b = ibcBursts[i];
+                    const age = (now - b.ts) / 1200; // 1.2s life
+                    if (age > 1) { ibcBursts.splice(i, 1); continue; }
+                    const ps = positions.get(b.src), pd = positions.get(b.dst);
+                    if (!ps || !pd) continue;
+                    const t = age;
+                    const x = ps.x + (pd.x - ps.x) * t;
+                    const y = ps.y + (pd.y - ps.y) * t;
+                    ctx.strokeStyle = b.color; ctx.fillStyle = b.color;
+                    ctx.globalAlpha = 0.7 * (1 - age); ctx.lineWidth = 3;
+                    ctx.beginPath(); ctx.moveTo(ps.x, ps.y); ctx.lineTo(x, y); ctx.stroke();
+                    ctx.beginPath(); ctx.arc(x, y, 5 + 6 * (1 - age), 0, Math.PI * 2); ctx.fill();
+                    ctx.globalAlpha = 1;
+                }
+
+                // nodes
+                for (const [id, c] of chains.entries()) {
+                    const p = positions.get(id); if (!p) continue;
+                    ctx.beginPath(); ctx.arc(p.x, p.y, 22, 0, Math.PI * 2);
+                    ctx.fillStyle = c.color; ctx.globalAlpha = .18; ctx.fill();
+                    ctx.lineWidth = 2; ctx.strokeStyle = c.color; ctx.globalAlpha = .9; ctx.stroke();
+
+                    ctx.fillStyle = '#dbe9ff'; ctx.globalAlpha = 1; ctx.font = '12px system-ui';
+                    ctx.textAlign = 'center';
+                    ctx.fillText(id, p.x, p.y - 28);
+                    ctx.fillStyle = '#9fb2ca';
+                    ctx.fillText(`h=${c.height ?? 0} • mem=${c.mempool ?? 0}`, p.x, p.y + 38);
+                }
+            }
+
+            function renderLegend() {
+                legend.innerHTML = '';
+                for (const [id, c] of chains.entries()) {
+                    const div = document.createElement('div');
+                    div.className = 'chip';
+                    div.innerHTML = `<span class="dot" style="background:${c.color}"></span><b>${id}</b>`;
+                    legend.appendChild(div);
+                }
+            }
+
+            function renderChains() {
+                const rows = [];
+                for (const [id, c] of [...chains.entries()].sort()) {
+                    rows.push(`<tr>
+        <td><span class="dot" style="background:${c.color}; margin-right:6px"></span>${id}</td>
+        <td class="muted">${c.consensus || '—'}</td>
+        <td>${c.height ?? 0}</td>
+        <td>${c.mempool ?? 0}</td>
+      </tr>`);
+                }
+                chainsTbl.innerHTML = rows.join('') || `<tr><td colspan="4" class="muted">No data yet</td></tr>`;
+            }
+
+            function renderChannels() {
+                const rows = [];
+                for (const [key, ent] of channels.entries()) {
+                    const [s, d] = key.split('|');
+                    rows.push(`<tr>
+        <td>${s} → ${d}</td>
+        <td>${ent.lastSeq}</td>
+        <td>${ent.packets}</td>
+        <td>${ent.acks}</td>
+      </tr>`);
+                }
+                chTbl.innerHTML = rows.join('') || `<tr><td colspan="4" class="muted">No channels yet</td></tr>`;
+            }
+
+            function renderRelayers() {
+                const rows = [];
+                for (const [id, r] of relayers.entries()) {
+                    const unhealthy = (Date.now() - r.lastTs < 5000 && r.failures > 0);
+                    rows.push(`<tr>
+        <td>${id}</td>
+        <td>${r.packets}</td>
+        <td>${r.acks}</td>
+        <td>${r.failures}</td>
+        <td><span class="pill ${unhealthy ? 'bad' : 'ok'}">${unhealthy ? 'ISSUES' : 'OK'}</span></td>
+      </tr>`);
+                }
+                relTbl.innerHTML = rows.join('') || `<tr><td colspan="5" class="muted">No relayer data yet</td></tr>`;
+            }
+
+            // ------- Main loop -------
+            await initFromConfig();
+
+            // Prime last sizes at current EOF, so we only process *new* lines
+            for (const f of [...tailFiles, ...nodeFiles, ...relayerFiles]) {
+                try { const txt = await fetchText(f); lastSize[f] = txt.length; } catch { }
+            }
+
+            // Poll ~5×/sec
+            setInterval(async () => {
+                // core files
+                for (const name of tailFiles) {
+                    const lines = await tailFile(name);
+                    for (const ln of lines) {
+                        const j = safeParse(ln); if (!j) continue;
+                        if (name === "transactions.jsonl") recordTx(j);
+                        if (name === "ibc_events.jsonl") recordIBC(j);
+                    }
+                }
+
+                // node states (chain heights/mempool)
+                for (const nf of nodeFiles) {
+                    const lines = await tailFile(nf);
+                    for (const ln of lines) {
+                        const j = safeParse(ln); if (j) upsertChainFromNodeState(j);
+                    }
+                }
+
+                // relayer states
+                for (const rf of relayerFiles) {
+                    const lines = await tailFile(rf);
+                    for (const ln of lines) {
+                        const j = safeParse(ln); if (j) recordRelayer(j);
+                    }
+                }
+
+                renderLegend(); renderChains(); renderChannels(); renderRelayers();
+                stats.textContent = `Chains: ${chains.size} • Channels: ${channels.size} • Relayers: ${relayers.size} • IBC bursts: ${ibcBursts.length}`;
+                draw();
+            }, 200);
+
+            // Smooth animation between polls
+            function rafLoop() { draw(); requestAnimationFrame(rafLoop); }
+            requestAnimationFrame(rafLoop);
+
+            // initial sizing
+            resizeCanvas();
+        })();
+    </script>
+</body>
+
+</html>
